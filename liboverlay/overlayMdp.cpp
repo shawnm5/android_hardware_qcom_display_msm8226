@@ -1,6 +1,6 @@
 /*
 * Copyright (C) 2008 The Android Open Source Project
-* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@
 #include "overlayUtils.h"
 #include "overlayMdp.h"
 #include "mdp_version.h"
-#include <overlay.h>
 
 #define HSIC_SETTINGS_DEBUG 0
 
@@ -33,29 +32,26 @@ static inline bool isEqual(float f1, float f2) {
 namespace ovutils = overlay::utils;
 namespace overlay {
 
-bool MdpCtrl::init(const int& dpy) {
-    int fbnum = Overlay::getFbForDpy(dpy);
-    if( fbnum < 0 ) {
-        ALOGE("%s: Invalid FB for the display: %d",__FUNCTION__, dpy);
-        return false;
-    }
-
+bool MdpCtrl::init(uint32_t fbnum) {
     // FD init
     if(!utils::openDev(mFd, fbnum,
                 Res::fbPath, O_RDWR)){
         ALOGE("Ctrl failed to init fbnum=%d", fbnum);
         return false;
     }
-    mDpy = dpy;
     return true;
 }
 
 void MdpCtrl::reset() {
     utils::memset0(mOVInfo);
+    utils::memset0(mLkgo);
     mOVInfo.id = MSMFB_NEW_REQUEST;
+    mLkgo.id = MSMFB_NEW_REQUEST;
     mOrientation = utils::OVERLAY_TRANSFORM_0;
-    mDpy = 0;
+    mDownscale = 0;
+    mForceSet = false;
 #ifdef USES_POST_PROCESSING
+    mPPChanged = false;
     memset(&mParams, 0, sizeof(struct compute_params));
     mParams.params.conv_params.order = hsic_order_hsc_i;
     mParams.params.conv_params.interface = interface_rec601;
@@ -105,10 +101,6 @@ void MdpCtrl::setCrop(const utils::Dim& d) {
     setSrcRectDim(d);
 }
 
-void MdpCtrl::setColor(const uint32_t color) {
-    mOVInfo.bg_color = color;
-}
-
 void MdpCtrl::setPosition(const overlay::utils::Dim& d) {
     setDstRectDim(d);
 }
@@ -117,23 +109,6 @@ void MdpCtrl::setTransform(const utils::eTransform& orient) {
     int rot = utils::getMdpOrient(orient);
     setUserData(rot);
     mOrientation = static_cast<utils::eTransform>(rot);
-}
-
-void MdpCtrl::setPipeType(const utils::eMdpPipeType& pType){
-    switch((int) pType){
-        case utils::OV_MDP_PIPE_RGB:
-            mOVInfo.pipe_type = PIPE_TYPE_RGB;
-            break;
-        case utils::OV_MDP_PIPE_VG:
-            mOVInfo.pipe_type = PIPE_TYPE_VIG;
-            break;
-        case utils::OV_MDP_PIPE_DMA:
-            mOVInfo.pipe_type = PIPE_TYPE_DMA;
-            break;
-        default:
-            mOVInfo.pipe_type = PIPE_TYPE_AUTO;
-            break;
-    }
 }
 
 void MdpCtrl::doTransform() {
@@ -146,7 +121,13 @@ void MdpCtrl::doTransform() {
 }
 
 void MdpCtrl::doDownscale() {
-    if(MDPVersion::getInstance().supportsDecimation()) {
+    int mdpVersion = MDPVersion::getInstance().getMDPVersion();
+    if(mdpVersion < MDSS_V5) {
+        mOVInfo.src_rect.x >>= mDownscale;
+        mOVInfo.src_rect.y >>= mDownscale;
+        mOVInfo.src_rect.w >>= mDownscale;
+        mOVInfo.src_rect.h >>= mDownscale;
+    } else if(MDPVersion::getInstance().supportsDecimation()) {
         utils::getDecimationFactor(mOVInfo.src_rect.w, mOVInfo.src_rect.h,
                 mOVInfo.dst_rect.w, mOVInfo.dst_rect.h, mOVInfo.horz_deci,
                 mOVInfo.vert_deci);
@@ -169,10 +150,6 @@ bool MdpCtrl::set() {
             if (!(mOVInfo.flags & MDP_SOURCE_ROTATED_90) &&
                 (mOVInfo.src_rect.h % 4))
                 mOVInfo.src_rect.h = utils::aligndown(mOVInfo.src_rect.h, 4);
-            // For interlaced, width must be multiple of 4 when rotated 90deg.
-            else if ((mOVInfo.flags & MDP_SOURCE_ROTATED_90) &&
-                (mOVInfo.src_rect.w % 4))
-                mOVInfo.src_rect.w = utils::aligndown(mOVInfo.src_rect.w, 4);
         }
     } else {
         if (mdpVersion >= MDSS_V5) {
@@ -185,6 +162,31 @@ bool MdpCtrl::set() {
     }
 
     doDownscale();
+
+    if(this->ovChanged() || mForceSet) {
+        mForceSet = false;
+        if(!mdp_wrapper::setOverlay(mFd.getFD(), mOVInfo)) {
+            ALOGE("MdpCtrl failed to setOverlay, restoring last known "
+                  "good ov info");
+            mdp_wrapper::dump("== Bad OVInfo is: ", mOVInfo);
+            mdp_wrapper::dump("== Last good known OVInfo is: ", mLkgo);
+            this->restore();
+            return false;
+        }
+        this->save();
+    }
+
+    return true;
+}
+
+bool MdpCtrl::get() {
+    mdp_overlay ov;
+    ov.id = mOVInfo.id;
+    if (!mdp_wrapper::getOverlay(mFd.getFD(), ov)) {
+        ALOGE("MdpCtrl get failed");
+        return false;
+    }
+    mOVInfo = ov;
     return true;
 }
 
@@ -217,8 +219,13 @@ void MdpData::getDump(char *buf, size_t len) {
     ovutils::getDump(buf, len, "Data", mOvData);
 }
 
+void MdpCtrl3D::dump() const {
+    ALOGE("== Dump MdpCtrl start ==");
+    mFd.dump();
+    ALOGE("== Dump MdpCtrl end ==");
+}
+
 bool MdpCtrl::setVisualParams(const MetaData_t& data) {
-    ALOGD_IF(0, "In %s: data.operation = %d", __FUNCTION__, data.operation);
 #ifdef USES_POST_PROCESSING
     bool needUpdate = false;
     /* calculate the data */
@@ -328,57 +335,9 @@ bool MdpCtrl::setVisualParams(const MetaData_t& data) {
 
     if (needUpdate) {
         display_pp_compute_params(&mParams, &mOVInfo.overlay_pp_cfg);
+        mPPChanged = true;
     }
 #endif
-    return true;
-}
-
-bool MdpCtrl::validateAndSet(MdpCtrl* mdpCtrlArray[], const int& count,
-        const int& fbFd) {
-    mdp_overlay* ovArray[count];
-    memset(&ovArray, 0, sizeof(ovArray));
-
-    for(int i = 0; i < count; i++) {
-        ovArray[i] = &mdpCtrlArray[i]->mOVInfo;
-    }
-
-    struct mdp_overlay_list list;
-    memset(&list, 0, sizeof(struct mdp_overlay_list));
-    list.num_overlays = count;
-    list.overlay_list = ovArray;
-
-   int (*fnProgramScale)(struct mdp_overlay_list *) =
-        Overlay::getFnProgramScale();
-    if(fnProgramScale) {
-        fnProgramScale(&list);
-    }
-
-    if(!mdp_wrapper::validateAndSet(fbFd, list)) {
-        /* No dump for failure due to insufficient resource */
-        if(errno != E2BIG) {
-            mdp_wrapper::dump("Bad ov dump: ",
-                *list.overlay_list[list.processed_overlays]);
-        }
-        return false;
-    }
-
-    return true;
-}
-
-
-//// MdpData ////////////
-bool MdpData::init(const int& dpy) {
-    int fbnum = Overlay::getFbForDpy(dpy);
-    if( fbnum < 0 ) {
-        ALOGE("%s: Invalid FB for the display: %d",__FUNCTION__, dpy);
-        return false;
-    }
-
-    // FD init
-    if(!utils::openDev(mFd, fbnum, Res::fbPath, O_RDWR)){
-        ALOGE("Ctrl failed to init fbnum=%d", fbnum);
-        return false;
-    }
     return true;
 }
 

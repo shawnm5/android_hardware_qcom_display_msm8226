@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -36,7 +36,6 @@
 #include "overlayUtils.h"
 #include "mdpWrapper.h"
 #include "mdp_version.h"
-#include <hardware/hwcomposer_defs.h>
 
 // just a helper static thingy
 namespace {
@@ -74,6 +73,12 @@ namespace overlay {
 //----------From class Res ------------------------------
 const char* const Res::fbPath = "/dev/graphics/fb%u";
 const char* const Res::rotPath = "/dev/msm_rotator";
+const char* const Res::format3DFile =
+        "/sys/class/graphics/fb1/format_3d";
+const char* const Res::edid3dInfoFile =
+        "/sys/class/graphics/fb1/3d_present";
+const char* const Res::barrierFile =
+        "/sys/devices/platform/mipi_novatek.0/enable_3d_barrier";
 //--------------------------------------------------------
 
 
@@ -95,8 +100,6 @@ int getMdpFormat(int format) {
             return MDP_RGB_565;
         case HAL_PIXEL_FORMAT_BGRA_8888:
             return MDP_BGRA_8888;
-        case HAL_PIXEL_FORMAT_BGRX_8888:
-            return MDP_BGRX_8888;
         case HAL_PIXEL_FORMAT_YV12:
             return MDP_Y_CR_CB_GH2V2;
         case HAL_PIXEL_FORMAT_YCbCr_422_SP:
@@ -111,10 +114,6 @@ int getMdpFormat(int format) {
             return MDP_Y_CBCR_H2V2;
         case HAL_PIXEL_FORMAT_YCrCb_422_SP:
             return MDP_Y_CRCB_H2V1;
-        case HAL_PIXEL_FORMAT_YCbCr_422_I:
-            return MDP_YCBYCR_H2V1;
-        case HAL_PIXEL_FORMAT_YCrCb_422_I:
-            return MDP_YCRYCB_H2V1;
         case HAL_PIXEL_FORMAT_YCbCr_444_SP:
             return MDP_Y_CBCR_H1V1;
         case HAL_PIXEL_FORMAT_YCrCb_444_SP:
@@ -129,6 +128,7 @@ int getMdpFormat(int format) {
             //---graphics.h--------
             //HAL_PIXEL_FORMAT_RGBA_5551
             //HAL_PIXEL_FORMAT_RGBA_4444
+            //HAL_PIXEL_FORMAT_YCbCr_422_I
             //---gralloc_priv.h-----
             //HAL_PIXEL_FORMAT_YCrCb_420_SP_ADRENO    = 0x7FA30C01
             //HAL_PIXEL_FORMAT_R_8                    = 0x10D
@@ -139,33 +139,6 @@ int getMdpFormat(int format) {
     // not reached
     return -1;
 }
-
-// This function returns corresponding tile format
-// MDSS support following RGB tile formats
-//  32 bit formats
-//  16 bit formats
-int getMdpFormat(int format, bool tileEnabled)
-{
-    if(!tileEnabled) {
-        return getMdpFormat(format);
-    }
-    switch (format) {
-        case HAL_PIXEL_FORMAT_RGBA_8888 :
-            return MDP_RGBA_8888_TILE;
-        case HAL_PIXEL_FORMAT_RGBX_8888:
-            return MDP_RGBX_8888_TILE;
-        case HAL_PIXEL_FORMAT_RGB_565:
-            return MDP_RGB_565_TILE;
-        case HAL_PIXEL_FORMAT_BGRA_8888:
-            return MDP_BGRA_8888_TILE;
-        case HAL_PIXEL_FORMAT_BGRX_8888:
-            return MDP_BGRX_8888_TILE;
-        default:
-            return getMdpFormat(format);
-    }
-}
-
-
 
 //Takes mdp format as input and translates to equivalent HAL format
 //Refer to graphics.h, gralloc_priv.h, msm_mdp.h for formats.
@@ -196,11 +169,7 @@ int getHALFormat(int mdpFormat) {
             return HAL_PIXEL_FORMAT_YCbCr_420_SP;
         case MDP_Y_CRCB_H2V1:
             return HAL_PIXEL_FORMAT_YCrCb_422_SP;
-        case MDP_YCBYCR_H2V1:
-            return HAL_PIXEL_FORMAT_YCbCr_422_I;
-        case MDP_YCRYCB_H2V1:
-            return HAL_PIXEL_FORMAT_YCrCb_422_I;
-         case MDP_Y_CBCR_H1V1:
+        case MDP_Y_CBCR_H1V1:
             return HAL_PIXEL_FORMAT_YCbCr_444_SP;
         case MDP_Y_CRCB_H1V1:
             return HAL_PIXEL_FORMAT_YCrCb_444_SP;
@@ -251,6 +220,9 @@ int getMdpOrient(eTransform rotation) {
 int getDownscaleFactor(const int& src_w, const int& src_h,
         const int& dst_w, const int& dst_h) {
     int dscale_factor = utils::ROT_DS_NONE;
+    // The tolerance is an empirical grey area that needs to be adjusted
+    // manually so that we always err on the side of caution
+    float fDscaleTolerance = 0.05;
     // We need this check to engage the rotator whenever possible to assist MDP
     // in performing video downscale.
     // This saves bandwidth and avoids causing the driver to make too many panel
@@ -258,8 +230,15 @@ int getDownscaleFactor(const int& src_w, const int& src_h,
     // Use-case: Video playback [with downscaling and rotation].
     if (dst_w && dst_h)
     {
-        float fDscale =  (float)(src_w * src_h) / (float)(dst_w * dst_h);
-        uint32_t dscale = (int)sqrtf(fDscale);
+        float fDscale =  sqrtf((float)(src_w * src_h) / (float)(dst_w * dst_h)) +
+                         fDscaleTolerance;
+
+        // On our MTP 1080p playback case downscale after sqrt is coming to 1.87
+        // we were rounding to 1. So entirely MDP has to do the downscaling.
+        // BW requirement and clock requirement is high across MDP4 targets.
+        // It is unable to downscale 1080p video to panel resolution on 8960.
+        // round(x) will round it to nearest integer and avoids above issue.
+        uint32_t dscale = round(fDscale);
 
         if(dscale < 2) {
             // Down-scale to > 50% of orig.
@@ -334,6 +313,86 @@ void preRotateSource(const eTransform& tr, Whf& whf, Dim& srcCrop) {
     }
 }
 
+bool is3DTV() {
+    char is3DTV = '0';
+    IOFile fp(Res::edid3dInfoFile, "r");
+    (void)fp.read(is3DTV, 1);
+    ALOGI("3DTV EDID flag: %d", is3DTV);
+    return (is3DTV == '0') ? false : true;
+}
+
+bool isPanel3D() {
+    OvFD fd;
+    if(!overlay::open(fd, 0 /*fb*/, Res::fbPath)){
+        ALOGE("isPanel3D Can't open framebuffer 0");
+        return false;
+    }
+    fb_fix_screeninfo finfo;
+    if(!mdp_wrapper::getFScreenInfo(fd.getFD(), finfo)) {
+        ALOGE("isPanel3D read fb0 failed");
+    }
+    fd.close();
+    return (FB_TYPE_3D_PANEL == finfo.type) ? true : false;
+}
+
+bool usePanel3D() {
+    if(!isPanel3D())
+        return false;
+    char value[PROPERTY_VALUE_MAX];
+    property_get("persist.user.panel3D", value, "0");
+    int usePanel3D = atoi(value);
+    return usePanel3D ? true : false;
+}
+
+bool send3DInfoPacket (uint32_t format3D) {
+    IOFile fp(Res::format3DFile, "wb");
+    (void)fp.write("%d", format3D);
+    if(!fp.valid()) {
+        ALOGE("send3DInfoPacket: no sysfs entry for setting 3d mode");
+        return false;
+    }
+    return true;
+}
+
+bool enableBarrier (uint32_t orientation) {
+    IOFile fp(Res::barrierFile, "wb");
+    (void)fp.write("%d", orientation);
+    if(!fp.valid()) {
+        ALOGE("enableBarrier no sysfs entry for "
+                "enabling barriers on 3D panel");
+        return false;
+    }
+    return true;
+}
+
+uint32_t getS3DFormat(uint32_t fmt) {
+    // The S3D is part of the HAL_PIXEL_FORMAT_YV12 value. Add
+    // an explicit check for the format
+    if (fmt == HAL_PIXEL_FORMAT_YV12) {
+        return 0;
+    }
+    uint32_t fmt3D = format3D(fmt);
+    uint32_t fIn3D = format3DInput(fmt3D); // MSB 2 bytes - inp
+    uint32_t fOut3D = format3DOutput(fmt3D); // LSB 2 bytes - out
+    fmt3D = fIn3D | fOut3D;
+    if (!fIn3D) {
+        fmt3D |= fOut3D << SHIFT_TOT_3D; //Set the input format
+    }
+    if (!fOut3D) {
+        switch (fIn3D) {
+            case HAL_3D_IN_SIDE_BY_SIDE_L_R:
+            case HAL_3D_IN_SIDE_BY_SIDE_R_L:
+                // For all side by side formats, set the output
+                // format as Side-by-Side i.e 0x1
+                fmt3D |= HAL_3D_IN_SIDE_BY_SIDE_L_R >> SHIFT_TOT_3D;
+                break;
+            default:
+                fmt3D |= fIn3D >> SHIFT_TOT_3D; //Set the output format
+        }
+    }
+    return fmt3D;
+}
+
 void getDump(char *buf, size_t len, const char *prefix,
         const mdp_overlay& ov) {
     char str[256] = {'\0'};
@@ -342,7 +401,7 @@ void getDump(char *buf, size_t len, const char *prefix,
             "V.Deci=%d\n",
             prefix, ov.id, ov.z_order, ov.is_fg, ov.alpha,
             ov.transp_mask, ov.flags, ov.horz_deci, ov.vert_deci);
-    strlcat(buf, str, len);
+    strncat(buf, str, strlen(str));
     getDump(buf, len, "\tsrc", ov.src);
     getDump(buf, len, "\tsrc_rect", ov.src_rect);
     getDump(buf, len, "\tdst_rect", ov.dst_rect);
@@ -355,7 +414,7 @@ void getDump(char *buf, size_t len, const char *prefix,
             "%s w=%d h=%d format=%d %s\n",
             prefix, ov.width, ov.height, ov.format,
             overlay::utils::getFormatString(ov.format));
-    strlcat(buf, str_src, len);
+    strncat(buf, str_src, strlen(str_src));
 }
 
 void getDump(char *buf, size_t len, const char *prefix,
@@ -364,7 +423,7 @@ void getDump(char *buf, size_t len, const char *prefix,
     snprintf(str_rect, 256,
             "%s x=%d y=%d w=%d h=%d\n",
             prefix, ov.x, ov.y, ov.w, ov.h);
-    strlcat(buf, str_rect, len);
+    strncat(buf, str_rect, strlen(str_rect));
 }
 
 void getDump(char *buf, size_t len, const char *prefix,
@@ -373,7 +432,7 @@ void getDump(char *buf, size_t len, const char *prefix,
     snprintf(str, 256,
             "%s id=%d\n",
             prefix, ov.id);
-    strlcat(buf, str, len);
+    strncat(buf, str, strlen(str));
     getDump(buf, len, "\tdata", ov.data);
 }
 
@@ -383,7 +442,7 @@ void getDump(char *buf, size_t len, const char *prefix,
     snprintf(str_data, 256,
             "%s offset=%d memid=%d id=%d flags=0x%x\n",
             prefix, ov.offset, ov.memory_id, ov.id, ov.flags);
-    strlcat(buf, str_data, len);
+    strncat(buf, str_data, strlen(str_data));
 }
 
 void getDump(char *buf, size_t len, const char *prefix,
@@ -392,7 +451,7 @@ void getDump(char *buf, size_t len, const char *prefix,
     snprintf(str, 256, "%s sessid=%u rot=%d, enable=%d downscale=%d\n",
             prefix, rot.session_id, rot.rotations, rot.enable,
             rot.downscale_ratio);
-    strlcat(buf, str, len);
+    strncat(buf, str, strlen(str));
     getDump(buf, len, "\tsrc", rot.src);
     getDump(buf, len, "\tdst", rot.dst);
     getDump(buf, len, "\tsrc_rect", rot.src_rect);
@@ -404,7 +463,7 @@ void getDump(char *buf, size_t len, const char *prefix,
     snprintf(str, 256,
             "%s sessid=%u\n",
             prefix, rot.session_id);
-    strlcat(buf, str, len);
+    strncat(buf, str, strlen(str));
     getDump(buf, len, "\tsrc", rot.src);
     getDump(buf, len, "\tdst", rot.dst);
 }

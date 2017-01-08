@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2012,2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2013 The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -87,10 +87,9 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
         reinterpret_cast<private_module_t*>(dev->common.module);
     private_handle_t *hnd = static_cast<private_handle_t*>
         (const_cast<native_handle_t*>(buffer));
-    const unsigned int offset = (unsigned int) (hnd->base -
-            m->framebuffer->base);
+    const size_t offset = hnd->base - m->framebuffer->base;
     m->info.activate = FB_ACTIVATE_VBL;
-    m->info.yoffset = (int)(offset / m->finfo.line_length);
+    m->info.yoffset = offset / m->finfo.line_length;
     if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
         ALOGE("%s: FBIOPUT_VSCREENINFO for primary failed, str: %s",
                 __FUNCTION__, strerror(errno));
@@ -102,9 +101,6 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 static int fb_compositionComplete(struct framebuffer_device_t* dev)
 {
     // TODO: Properly implement composition complete callback
-    if(!dev) {
-        return -1;
-    }
     glFinish();
 
     return 0;
@@ -137,16 +133,12 @@ int mapFrameBufferLocked(struct private_module_t* module)
     memset(&module->commit, 0, sizeof(struct mdp_display_commit));
 
     struct fb_fix_screeninfo finfo;
-    if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1) {
-        close(fd);
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
-    }
 
     struct fb_var_screeninfo info;
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1) {
-        close(fd);
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
-    }
 
     info.reserved[0] = 0;
     info.reserved[1] = 0;
@@ -205,8 +197,8 @@ int mapFrameBufferLocked(struct private_module_t* module)
     }
 
     //adreno needs 4k aligned offsets. Max hole size is 4096-1
-    unsigned int size = roundUpToPageSize(info.yres * info.xres *
-                                               (info.bits_per_pixel/8));
+    int  size = roundUpToPageSize(info.yres * info.xres *
+                                                       (info.bits_per_pixel/8));
 
     /*
      * Request NUM_BUFFERS screens (at least 2 for page flipping)
@@ -227,43 +219,39 @@ int mapFrameBufferLocked(struct private_module_t* module)
 
     //consider the included hole by 4k alignment
     uint32_t line_length = (info.xres * info.bits_per_pixel / 8);
-    info.yres_virtual = (uint32_t) ((size * numberOfBuffers) / line_length);
+    info.yres_virtual = (size * numberOfBuffers) / line_length;
 
     uint32_t flags = PAGE_FLIP;
 
     if (info.yres_virtual < ((size * 2) / line_length) ) {
         // we need at least 2 for page-flipping
-        info.yres_virtual = (int)(size / line_length);
+        info.yres_virtual = size / line_length;
         flags &= ~PAGE_FLIP;
         ALOGW("page flipping not supported (yres_virtual=%d, requested=%d)",
               info.yres_virtual, info.yres*2);
     }
 
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1) {
-        close(fd);
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
-    }
 
     if (int(info.width) <= 0 || int(info.height) <= 0) {
         // the driver doesn't return that information
         // default to 160 dpi
-        info.width  = (uint32_t)(((float)(info.xres) * 25.4f)/160.0f + 0.5f);
-        info.height = (uint32_t)(((float)(info.yres) * 25.4f)/160.0f + 0.5f);
+        info.width  = ((info.xres * 25.4f)/160.0f + 0.5f);
+        info.height = ((info.yres * 25.4f)/160.0f + 0.5f);
     }
 
-    float xdpi = ((float)(info.xres) * 25.4f) / (float)info.width;
-    float ydpi = ((float)(info.yres) * 25.4f) / (float)info.height;
-
+    float xdpi = (info.xres * 25.4f) / info.width;
+    float ydpi = (info.yres * 25.4f) / info.height;
 #ifdef MSMFB_METADATA_GET
     struct msmfb_metadata metadata;
     memset(&metadata, 0 , sizeof(metadata));
     metadata.op = metadata_op_frame_rate;
     if (ioctl(fd, MSMFB_METADATA_GET, &metadata) == -1) {
         ALOGE("Error retrieving panel frame rate");
-        close(fd);
         return -errno;
     }
-    float fps = (float)metadata.data.panel_frame_rate;
+    float fps  = metadata.data.panel_frame_rate;
 #else
     //XXX: Remove reserved field usage on all baselines
     //The reserved[3] field is used to store FPS by the driver.
@@ -300,15 +288,11 @@ int mapFrameBufferLocked(struct private_module_t* module)
          );
 
 
-    if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1) {
-        close(fd);
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
-    }
 
-    if (finfo.smem_len <= 0) {
-        close(fd);
+    if (finfo.smem_len <= 0)
         return -errno;
-    }
 
     module->flags = flags;
     module->info = info;
@@ -327,7 +311,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
     module->numBuffers = info.yres_virtual / info.yres;
     module->bufferMask = 0;
     //adreno needs page aligned offsets. Align the fbsize to pagesize.
-    unsigned int fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
+    size_t fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
                     module->numBuffers;
     module->framebuffer = new private_handle_t(fd, fbSize,
                                         private_handle_t::PRIV_FLAGS_USES_ION,
@@ -336,11 +320,11 @@ int mapFrameBufferLocked(struct private_module_t* module)
     void* vaddr = mmap(0, fbSize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (vaddr == MAP_FAILED) {
         ALOGE("Error mapping the framebuffer (%s)", strerror(errno));
-        close(fd);
         return -errno;
     }
-    module->framebuffer->base = uint64_t(vaddr);
+    module->framebuffer->base = intptr_t(vaddr);
     memset(vaddr, 0, fbSize);
+    module->currentOffset = 0;
     //Enable vsync
     int enable = 1;
     ioctl(module->framebuffer->fd, MSMFB_OVERLAY_VSYNC_CTRL,
@@ -368,9 +352,7 @@ static int fb_close(struct hw_device_t *dev)
 {
     fb_context_t* ctx = (fb_context_t*)dev;
     if (ctx) {
-        //Hack until fbdev is removed. Framework could close this causing hwc a
-        //pain.
-        //free(ctx);
+        free(ctx);
     }
     return 0;
 }
@@ -387,10 +369,6 @@ int fb_device_open(hw_module_t const* module, const char* name,
 
         /* initialize our state here */
         fb_context_t *dev = (fb_context_t*)malloc(sizeof(*dev));
-        if(dev == NULL) {
-            gralloc_close(gralloc_device);
-            return status;
-        }
         memset(dev, 0, sizeof(*dev));
 
         /* initialize the procs */

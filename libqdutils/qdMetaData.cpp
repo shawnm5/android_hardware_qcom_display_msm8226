@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -27,13 +27,10 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <errno.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <cutils/log.h>
 #include <gralloc_priv.h>
-#define __STDC_FORMAT_MACROS 1
-#include <inttypes.h>
 #include "qdMetaData.h"
 
 int setMetaData(private_handle_t *handle, DispParamType paramType,
@@ -53,8 +50,8 @@ int setMetaData(private_handle_t *handle, DispParamType paramType,
     unsigned long size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
     void *base = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED,
         handle->fd_metadata, 0);
-    if (base == reinterpret_cast<void*>(MAP_FAILED)) {
-        ALOGE("%s: mmap() failed: error is %s!", __func__, strerror(errno));
+    if (!base) {
+        ALOGE("%s: mmap() failed: Base addr is NULL!", __func__);
         return -1;
     }
     MetaData_t *data = reinterpret_cast <MetaData_t *>(base);
@@ -83,7 +80,7 @@ int setMetaData(private_handle_t *handle, DispParamType paramType,
             break;
         case UPDATE_BUFFER_GEOMETRY:
             memcpy((void *)&data->bufferDim, param, sizeof(BufferDim_t));
-        break;
+            break;
         case UPDATE_COLOR_SPACE:
             data->colorSpace = *((ColorSpace_t *)param);
             break;
@@ -92,7 +89,7 @@ int setMetaData(private_handle_t *handle, DispParamType paramType,
             break;
     }
     if(munmap(base, size))
-        ALOGE("%s: failed to unmap ptr %p, err %d", __func__, (void*)base,
+        ALOGE("%s: failed to unmap ptr 0x%x, err %d", __func__, (int)base,
                                                                         errno);
     return 0;
 }

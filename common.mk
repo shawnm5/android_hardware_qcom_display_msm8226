@@ -21,7 +21,7 @@ common_libs := liblog libutils libcutils libhardware
 #Common C flags
 common_flags := -DDEBUG_CALC_FPS -Wno-missing-field-initializers
 #TODO: Add -Werror back once all the current warnings are fixed
-common_flags += -Wconversion -Wall
+common_flags += -Werror -Wno-unused-parameter
 
 ifeq ($(ARCH_ARM_HAVE_NEON),true)
     common_flags += -D__ARM_HAVE_NEON
@@ -37,13 +37,20 @@ ifeq ($(TARGET_HAS_VSYNC_FAILURE_FALLBACK), true)
     common_flags += -DVSYNC_FAILURE_FALLBACK
 endif
 
+ifeq ($(TARGET_FORCE_HWC_FOR_VIRTUAL_DISPLAYS), true)
+    common_flags += -DFORCE_HWC_FOR_VIRTUAL_DISPLAYS
+endif
+
 common_deps  :=
 kernel_includes :=
 
 # Executed only on QCOM BSPs
 ifeq ($(TARGET_USES_QCOM_BSP),true)
 # Enable QCOM Display features
+ifneq ($(call is-platform-sdk-version-at-least,18),true)
+# This flag is used to compile out any features that depend on framework changes
     common_flags += -DQCOM_BSP
+    common_flags += -DANDROID_JELLYBEAN_MR1=1
 endif
 
 ifneq (,$(DISPLAY_FEATURE_MAX_ROT_SESSION))

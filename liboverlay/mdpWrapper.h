@@ -29,7 +29,6 @@
 
 #ifndef MDP_WRAPPER_H
 #define MDP_WRAPPER_H
-
 #define ATRACE_TAG (ATRACE_TAG_GRAPHICS | ATRACE_TAG_HAL)
 
 /*
@@ -41,11 +40,9 @@
 #include <linux/msm_rotator.h>
 #include <sys/ioctl.h>
 #include <utils/Log.h>
-#include <utils/Trace.h>
 #include <errno.h>
 #include "overlayUtils.h"
-
-#define IOCTL_DEBUG 0
+#include <utils/Trace.h>
 
 namespace overlay{
 
@@ -68,9 +65,6 @@ bool rotate(int fd, msm_rotator_data_info& rot);
 /* MSMFB_OVERLAY_SET */
 bool setOverlay(int fd, mdp_overlay& ov);
 
-/* MSMFB_OVERLAY_PREPARE */
-bool validateAndSet(const int& fd, mdp_overlay_list& list);
-
 /* MSM_ROTATOR_IOCTL_FINISH */
 bool endRotator(int fd, int sessionId);
 
@@ -82,6 +76,9 @@ bool getOverlay(int fd, mdp_overlay& ov);
 
 /* MSMFB_OVERLAY_PLAY */
 bool play(int fd, msmfb_overlay_data& od);
+
+/* MSMFB_OVERLAY_3D */
+bool set3D(int fd, msmfb_overlay_3d& ov);
 
 /* MSMFB_DISPLAY_COMMIT */
 bool displayCommit(int fd);
@@ -178,16 +175,6 @@ inline bool setOverlay(int fd, mdp_overlay& ov) {
     return true;
 }
 
-inline bool validateAndSet(const int& fd, mdp_overlay_list& list) {
-    ATRACE_CALL();
-    if (ioctl(fd, MSMFB_OVERLAY_PREPARE, &list) < 0) {
-        ALOGD_IF(IOCTL_DEBUG, "Failed to call ioctl MSMFB_OVERLAY_PREPARE "
-                "err=%s", strerror(errno));
-        return false;
-    }
-    return true;
-}
-
 inline bool endRotator(int fd, uint32_t sessionId) {
     ATRACE_CALL();
     if (ioctl(fd, MSM_ROTATOR_IOCTL_FINISH, &sessionId) < 0) {
@@ -222,6 +209,16 @@ inline bool play(int fd, msmfb_overlay_data& od) {
     ATRACE_CALL();
     if (ioctl(fd, MSMFB_OVERLAY_PLAY, &od) < 0) {
         ALOGE("Failed to call ioctl MSMFB_OVERLAY_PLAY err=%s",
+                strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+inline bool set3D(int fd, msmfb_overlay_3d& ov) {
+    ATRACE_CALL();
+    if (ioctl(fd, MSMFB_OVERLAY_3D, &ov) < 0) {
+        ALOGE("Failed to call ioctl MSMFB_OVERLAY_3D err=%s",
                 strerror(errno));
         return false;
     }

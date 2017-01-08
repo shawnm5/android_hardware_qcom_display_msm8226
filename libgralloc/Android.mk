@@ -17,8 +17,11 @@ LOCAL_PATH := $(call my-dir)
 include $(LOCAL_PATH)/../common.mk
 include $(CLEAR_VARS)
 
+# gralloc.cpp:87  use of GNU old-style field designator extension.
+LOCAL_CLANG_CFLAGS            += -Wno-gnu-designator
+
 LOCAL_MODULE                  := gralloc.$(TARGET_BOARD_PLATFORM)
-LOCAL_MODULE_RELATIVE_PATH    := hw
+LOCAL_MODULE_PATH             := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 LOCAL_MODULE_TAGS             := optional
 LOCAL_C_INCLUDES              := $(common_includes) $(kernel_includes)
 LOCAL_SHARED_LIBRARIES        := $(common_libs) libmemalloc libqdMetaData
@@ -41,6 +44,5 @@ LOCAL_SHARED_LIBRARIES        := $(common_libs) libqdutils libdl
 LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"qdmemalloc\"
 LOCAL_ADDITIONAL_DEPENDENCIES := $(common_deps) $(kernel_deps)
 LOCAL_SRC_FILES               := ionalloc.cpp alloc_controller.cpp
-LOCAL_COPY_HEADERS            := alloc_controller.h memalloc.h
 
 include $(BUILD_SHARED_LIBRARY)

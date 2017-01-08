@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008, The Android Open Source Project
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,14 +69,13 @@ struct private_module_t HAL_MODULE_INFO_SYM = {
     base: {
         common: {
             tag: HARDWARE_MODULE_TAG,
-            version_major: 1,
-            version_minor: 0,
+            module_api_version: GRALLOC_MODULE_API_VERSION_0_2,
+            hal_api_version: 0,
             id: GRALLOC_HARDWARE_MODULE_ID,
             name: "Graphics Memory Allocator Module",
             author: "The Android Open Source Project",
             methods: &gralloc_module_methods,
             dso: 0,
-            reserved: {0},
         },
         registerBuffer: gralloc_register_buffer,
         unregisterBuffer: gralloc_unregister_buffer,
@@ -105,9 +104,6 @@ int gralloc_device_open(const hw_module_t* module, const char* name,
         gpu_context_t *dev;
         IAllocController* alloc_ctrl = IAllocController::getInstance();
         dev = new gpu_context_t(m, alloc_ctrl);
-        if(!dev)
-            return status;
-
         *device = &dev->common;
         status = 0;
     } else {

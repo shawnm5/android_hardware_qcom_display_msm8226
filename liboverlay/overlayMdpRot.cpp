@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
  *
@@ -19,7 +19,6 @@
 
 #include "overlayUtils.h"
 #include "overlayRotator.h"
-#include "gr.h"
 
 namespace ovutils = overlay::utils;
 
@@ -34,7 +33,7 @@ MdpRot::~MdpRot() { close(); }
 
 bool MdpRot::enabled() const { return mRotImgInfo.enable; }
 
-void MdpRot::setRotations(uint32_t r) { mRotImgInfo.rotations = (uint8_t)r; }
+void MdpRot::setRotations(uint32_t r) { mRotImgInfo.rotations = r; }
 
 int MdpRot::getDstMemId() const {
     return mRotDataInfo.dst.memory_id;
@@ -46,24 +45,6 @@ uint32_t MdpRot::getDstOffset() const {
 
 uint32_t MdpRot::getDstFormat() const {
     return mRotImgInfo.dst.format;
-}
-
-//Added for completeness. Not expected to be called.
-utils::Whf MdpRot::getDstWhf() const {
-    int alW = 0, alH = 0;
-    int halFormat = ovutils::getHALFormat(mRotImgInfo.dst.format);
-    getBufferSizeAndDimensions(mRotImgInfo.dst.width, mRotImgInfo.dst.height,
-            halFormat, alW, alH);
-    return utils::Whf(alW, alH, mRotImgInfo.dst.format);
-}
-
-//Added for completeness. Not expected to be called.
-utils::Dim MdpRot::getDstDimensions() const {
-    int alW = 0, alH = 0;
-    int halFormat = ovutils::getHALFormat(mRotImgInfo.dst.format);
-    getBufferSizeAndDimensions(mRotImgInfo.dst.width, mRotImgInfo.dst.height,
-            halFormat, alW, alH);
-    return utils::Dim(0, 0, alW, alH);
 }
 
 uint32_t MdpRot::getSessId() const { return mRotImgInfo.session_id; }
@@ -113,7 +94,7 @@ void MdpRot::setSource(const overlay::utils::Whf& awhf) {
     mRotImgInfo.dst.height = whf.h;
 }
 
-void MdpRot::setCrop(const utils::Dim& /*crop*/) {
+void MdpRot::setCrop(const utils::Dim& crop) {
     // NO-OP for non-mdss rotator due to possible h/w limitations
 }
 
@@ -175,7 +156,7 @@ bool MdpRot::open_i(uint32_t numbufs, uint32_t bufsz)
 
     mRotDataInfo.dst.memory_id = mem.getFD();
     mRotDataInfo.dst.offset = 0;
-    mMem.mem = mem;
+    mMem.curr().m = mem;
     return true;
 }
 
@@ -203,27 +184,23 @@ bool MdpRot::close() {
 bool MdpRot::remap(uint32_t numbufs) {
     // if current size changed, remap
     uint32_t opBufSize = calcOutputBufSize();
-    if(opBufSize == mMem.size()) {
+    if(opBufSize == mMem.curr().size()) {
         ALOGE_IF(DEBUG_OVERLAY, "%s: same size %d", __FUNCTION__, opBufSize);
         return true;
     }
 
-    if(!mMem.close()) {
-        ALOGE("%s error in closing prev rot mem", __FUNCTION__);
-        return false;
-    }
-
     ALOGE_IF(DEBUG_OVERLAY, "%s: size changed - remapping", __FUNCTION__);
+    OVASSERT(!mMem.prev().valid(), "Prev should not be valid");
 
+    // ++mMem will make curr to be prev, and prev will be curr
+    ++mMem;
     if(!open_i(numbufs, opBufSize)) {
         ALOGE("%s Error could not open", __FUNCTION__);
         return false;
     }
-
     for (uint32_t i = 0; i < numbufs; ++i) {
-        mMem.mRotOffset[i] = i * opBufSize;
+        mMem.curr().mRotOffset[i] = i * opBufSize;
     }
-
     return true;
 }
 
@@ -231,8 +208,10 @@ void MdpRot::reset() {
     ovutils::memset0(mRotImgInfo);
     ovutils::memset0(mLSRotImgInfo);
     ovutils::memset0(mRotDataInfo);
-    ovutils::memset0(mMem.mRotOffset);
-    mMem.mCurrIndex = 0;
+    ovutils::memset0(mMem.curr().mRotOffset);
+    ovutils::memset0(mMem.prev().mRotOffset);
+    mMem.curr().mCurrOffset = 0;
+    mMem.prev().mCurrOffset = 0;
     mOrientation = utils::OVERLAY_TRANSFORM_0;
 }
 
@@ -241,20 +220,29 @@ bool MdpRot::queueBuffer(int fd, uint32_t offset) {
         mRotDataInfo.src.memory_id = fd;
         mRotDataInfo.src.offset = offset;
 
-        if(false == remap(RotMem::ROT_NUM_BUFS)) {
-            ALOGE("%s Remap failed, not queueing", __FUNCTION__);
-            return false;
-        }
-
+        remap(RotMem::Mem::ROT_NUM_BUFS);
+        OVASSERT(mMem.curr().m.numBufs(),
+                "queueBuffer numbufs is 0");
         mRotDataInfo.dst.offset =
-                mMem.mRotOffset[mMem.mCurrIndex];
-        mMem.mCurrIndex =
-                (mMem.mCurrIndex + 1) % mMem.mem.numBufs();
+                mMem.curr().mRotOffset[mMem.curr().mCurrOffset];
+        mMem.curr().mCurrOffset =
+                (mMem.curr().mCurrOffset + 1) % mMem.curr().m.numBufs();
 
         if(!overlay::mdp_wrapper::rotate(mFd.getFD(), mRotDataInfo)) {
             ALOGE("MdpRot failed rotate");
             dump();
             return false;
+        }
+
+        // if the prev mem is valid, we need to close
+        if(mMem.prev().valid()) {
+            // FIXME if no wait for vsync the above
+            // play will return immediatly and might cause
+            // tearing when prev.close is called.
+            if(!mMem.prev().close()) {
+                ALOGE("%s error in closing prev rot mem", __FUNCTION__);
+                return false;
+            }
         }
     }
     return true;
@@ -263,7 +251,7 @@ bool MdpRot::queueBuffer(int fd, uint32_t offset) {
 void MdpRot::dump() const {
     ALOGE("== Dump MdpRot start ==");
     mFd.dump();
-    mMem.mem.dump();
+    mMem.curr().m.dump();
     mdp_wrapper::dump("mRotImgInfo", mRotImgInfo);
     mdp_wrapper::dump("mRotDataInfo", mRotDataInfo);
     ALOGE("== Dump MdpRot end ==");
