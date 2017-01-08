@@ -20,7 +20,6 @@ common_libs := liblog libutils libcutils libhardware
 
 #Common C flags
 common_flags := -DDEBUG_CALC_FPS -Wno-missing-field-initializers
-#TODO: Add -Werror back once all the current warnings are fixed
 common_flags += -Werror -Wno-unused-parameter
 
 ifeq ($(ARCH_ARM_HAVE_NEON),true)
@@ -31,10 +30,6 @@ ifeq ($(call is-board-platform-in-list, msm8974 msm8226 msm8610 apq8084 \
         mpq8092 msm_bronze msm8916 msm8994), true)
     common_flags += -DVENUS_COLOR_FORMAT
     common_flags += -DMDSS_TARGET
-endif
-
-ifeq ($(TARGET_HAS_VSYNC_FAILURE_FALLBACK), true)
-    common_flags += -DVSYNC_FAILURE_FALLBACK
 endif
 
 ifeq ($(TARGET_FORCE_HWC_FOR_VIRTUAL_DISPLAYS), true)
@@ -52,9 +47,6 @@ ifneq ($(call is-platform-sdk-version-at-least,18),true)
     common_flags += -DQCOM_BSP
     common_flags += -DANDROID_JELLYBEAN_MR1=1
 endif
-
-ifneq (,$(DISPLAY_FEATURE_MAX_ROT_SESSION))
-    common_flags += -DTARGET_SPECIFIC_MAX_ROT_SESSION=$(DISPLAY_FEATURE_MAX_ROT_SESSION)
 endif
 
 #ifeq ($(call is-vendor-board-platform,QCOM),true)
